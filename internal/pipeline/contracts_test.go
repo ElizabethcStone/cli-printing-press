@@ -1294,14 +1294,19 @@ func TestReprintSkillSurfacesManifestDiffBeforeHandoff(t *testing.T) {
 	assert.Contains(t, reprintSkill, "Do not continue silently when tracked manifest fields")
 }
 
-func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {
+func TestPolishSkillBuildsGosecThatLoadsCurrentGo(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
-	fallback := "go run github.com/securego/gosec/v2/cmd/gosec@v2.26.1"
 
-	assert.Equal(t, 3, strings.Count(skill, fallback))
-	assert.Contains(t, skill, fallback+" -fmt=json -out=/tmp/polish-gosec-before.json ./...")
-	assert.Contains(t, skill, fallback+" -fmt=json -out=/tmp/polish-gosec-after.json ./...")
-	assert.NotContains(t, skill, "github.com/securego/gosec/v2/cmd/gosec@v2.21.4")
+	// Released gosec bundles an x/tools that cannot read newer Go export data;
+	// the fallback must build gosec against a pinned current x/tools.
+	assert.Contains(t, skill, "go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0")
+	assert.Equal(t, 1, strings.Count(skill, "cat > /tmp/polish-gosec.sh <<'GOSEC'"))
+	assert.Contains(t, skill, ". /tmp/polish-gosec.sh\npolish_gosec /tmp/polish-gosec-before.json")
+	assert.Contains(t, skill, ". /tmp/polish-gosec.sh\npolish_gosec /tmp/polish-gosec-after.json")
+	// An installed gosec that skipped packages must not count as a full scan.
+	assert.Contains(t, skill, `(."Golang errors" // {}) | length`)
+	assert.Contains(t, skill, `non-empty `+"`"+`"Golang errors"`+"`"+` map`)
+	assert.NotContains(t, skill, "go run github.com/securego/gosec/v2/cmd/gosec@")
 }
 
 func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
