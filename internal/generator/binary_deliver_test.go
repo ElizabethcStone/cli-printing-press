@@ -214,6 +214,7 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, err, out)
 		require.NotContains(t, out, "binary response cannot be rendered as structured output")
 		require.Contains(t, out, `"dry_run"`)
+		require.Regexp(t, `"action":\s*"get"`, out, "binary GET dry-run JSON must carry the action live dogfood requires")
 		_, statErr := os.Stat(dest)
 		require.Error(t, statErr)
 	})
@@ -240,6 +241,7 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, err, out)
 		require.NotContains(t, out, "binary response cannot be rendered as structured output")
 		require.Contains(t, out, `"dry_run"`)
+		require.Regexp(t, `"action":\s*"post"`, out, "binary POST dry-run JSON must carry the action live dogfood requires")
 	})
 
 	t.Run("promoted-json-deliver-writes-raw-bytes", func(t *testing.T) {

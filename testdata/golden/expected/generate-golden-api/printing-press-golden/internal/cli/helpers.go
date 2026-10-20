@@ -2921,6 +2921,28 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
+// Provenance and platform wrappers nest the client sentinel under results.
+// The dry-run JSON contract reads only top-level keys, so stamping has to
+// happen after those wrappers or dry_run and action never surface.
+func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
+	var envelope map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, err
+		}
+	}
+	if envelope == nil {
+		envelope = map[string]any{}
+	}
+	envelope["dry_run"] = true
+	envelope["action"] = action
+	stamped, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(stamped), nil
+}
+
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
 func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
 	if !dryRun {
@@ -2954,6 +2976,12 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 		}
 		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
 		if printDryRun {
+			// The dry-run JSON contract needs a top-level action; the client sentinel carries only dry_run.
+			if method := cmd.Annotations["pp:method"]; method != "" {
+				if stamped, err := stampDryRunEnvelope(data, strings.ToLower(method)); err == nil {
+					data = stamped
+				}
+			}
 			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
 		}
 		return true, nil
