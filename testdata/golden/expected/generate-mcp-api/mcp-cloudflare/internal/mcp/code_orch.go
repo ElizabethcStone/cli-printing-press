@@ -107,6 +107,11 @@ type codeOrchEndpoint struct {
 	// params object; a strict-mapping API rejects an object at the body
 	// root with HTTP 422 "Invalid json".
 	BodyIsArray bool
+	// Page carries the GET list paging settings the per-endpoint tools use, so
+	// an over-budget list resumes inside the bounded page instead of handing
+	// the agent the server cursor for the following page (which skips the
+	// rows the bound dropped).
+	Page mcpPageConfig
 	// NeedsConfirm is the read-command classifier's write signal, plus every
 	// DELETE. It stays separate from Mutating: Mutating selects the GET
 	// transport that bypasses the response cache, including GETs the
@@ -367,6 +372,24 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 		hdrs = nil
 	}
 
+	// An opaque MCP cursor from a bounded page resumes that page; a raw
+	// upstream cursor is sent as-is and anchors any local continuation.
+	mcpCursor, requestCursor := "", ""
+	if method == "GET" && ep.Page.CursorParam != "" {
+		if s, ok := params[ep.Page.CursorParam].(string); ok && s != "" {
+			if upstream, err := bound.UpstreamCursor(s); err == nil {
+				mcpCursor, requestCursor = s, upstream
+				if upstream == "" {
+					delete(params, ep.Page.CursorParam)
+				} else {
+					params[ep.Page.CursorParam] = upstream
+				}
+			} else {
+				requestCursor = s
+			}
+		}
+	}
+
 	// Route params to their runtime slots. GET/DELETE params are query
 	// strings; write methods split spec-declared query params from the
 	// remaining params used as the request body below.
@@ -487,7 +510,17 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	text := bound.EndpointResponse(method, data)
+	var text string
+	if method == "GET" && (ep.Page.CursorParam != "" || ep.Page.NextCursorPath != "") {
+		text = bound.EndpointPageResponse(method, data, bound.PageOptions{
+			Cursor:         mcpCursor,
+			CursorParam:    ep.Page.CursorParam,
+			NextCursorPath: ep.Page.NextCursorPath,
+			RequestCursor:  requestCursor,
+		})
+	} else {
+		text = bound.EndpointResponse(method, data)
+	}
 	if platformSession != nil {
 		text = bound.WithMetadata(text, platformSession.OutputMetadata())
 	}
