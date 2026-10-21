@@ -318,6 +318,14 @@ func codeOrchEndpointMetadata(ep *codeOrchEndpoint) map[string]any {
 		}
 	}
 {{- end}}
+{{- if hasMultipartRequest .APISpec}}
+	if ep.Multipart {
+		out["multipart"] = map[string]any{
+			"file_params": ep.FileParams,
+			"file_value":  "local file path",
+		}
+	}
+{{- end}}
 	return out
 }
 
