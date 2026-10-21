@@ -1307,6 +1307,8 @@ func TestPolishSkillBuildsGosecThatLoadsCurrentGo(t *testing.T) {
 	helpers := polishGosecHelpers(skill)
 	require.Len(t, helpers, 2)
 	assert.Equal(t, helpers[0], helpers[1], "baseline and after-fix gosec helpers must match")
+	assert.Contains(t, helpers[0], "export GOWORK=off")
+	assert.Equal(t, 2, strings.Count(helpers[0], `rm -rf "$built"`))
 	assert.NotContains(t, skill, "/tmp/polish-gosec.sh")
 	assert.Contains(t, skill, `non-empty `+"`"+`"Golang errors"`+"`"+` map`)
 	assert.NotContains(t, skill, "go run github.com/securego/gosec/v2/cmd/gosec@")
@@ -1347,42 +1349,57 @@ func TestPolishSkillGosecHelperFallsBackAndReportsBuildFailures(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	}
 	// Fake go: "go build -o <path>" installs a reporter that writes a full report;
-	// FAKE_GO_FAIL makes "go get" fail like a proxy or network outage.
+	// FAKE_GO_FAIL makes "go get" fail like a proxy or network outage. A
+	// GOWORK value other than off fails the way a scratch module outside the
+	// caller's workspace would.
 	fakeGo := func(dir string) {
 		writeReporter(filepath.Join(dir, "full-reporter"), fullReport)
 		script := "#!/bin/sh\n" +
-			"echo \"$*\" >> \"$FAKE_GO_LOG\"\n" +
+			"echo \"GOWORK=${GOWORK-} $*\" >> \"$FAKE_GO_LOG\"\n" +
+			"if [ -n \"$GOWORK\" ] && [ \"$GOWORK\" != off ]; then echo 'directory is not in the workspace' >&2; exit 1; fi\n" +
 			"case $1 in\n" +
 			"get) if [ -n \"$FAKE_GO_FAIL\" ]; then echo 'proxy unreachable' >&2; exit 1; fi;;\n" +
-			"build) cp \"$FAKE_FULL_REPORTER\" \"$3\";;\n" +
+			"build)\n" +
+			"printf '%s\\n' '#!/bin/sh' 'echo \"SCAN_GOWORK=${GOWORK-}\" >> \"$FAKE_GO_LOG\"' > \"$3\"\n" +
+			"cat \"$FAKE_FULL_REPORTER\" >> \"$3\"\n" +
+			"chmod +x \"$3\"\n" +
+			";;\n" +
 			"esac\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755))
 	}
 
-	run := func(t *testing.T, installed string, failBuild bool) (string, string, error) {
+	run := func(t *testing.T, installed string, failBuild bool, extraEnv ...string) (string, string, error) {
 		t.Helper()
 		bin := t.TempDir()
 		fakeGo(bin)
+		// jq lives in the fake bin so PATH does not include its real directory,
+		// where a package manager may also install gosec.
+		require.NoError(t, os.Symlink(jq, filepath.Join(bin, "jq")))
 		if installed != "" {
 			writeReporter(filepath.Join(bin, "gosec"), installed)
 		}
 		work := t.TempDir()
 		out := filepath.Join(work, "report.json")
 		goLog := filepath.Join(work, "go.log")
+		scratch := t.TempDir()
 		cmd := exec.Command("bash", "-c", helpers[0]+"polish_gosec \""+out+"\"")
 		cmd.Dir = work
 		cmd.Env = []string{
-			"PATH=" + bin + string(os.PathListSeparator) + filepath.Dir(jq) + string(os.PathListSeparator) + "/usr/bin:/bin",
-			"TMPDIR=" + t.TempDir(),
+			"PATH=" + bin + string(os.PathListSeparator) + "/usr/bin:/bin",
+			"TMPDIR=" + scratch,
 			"FAKE_GO_LOG=" + goLog,
 			"FAKE_FULL_REPORTER=" + filepath.Join(bin, "full-reporter"),
 		}
 		if failBuild {
 			cmd.Env = append(cmd.Env, "FAKE_GO_FAIL=1")
 		}
+		cmd.Env = append(cmd.Env, extraEnv...)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		err := cmd.Run()
+		entries, readErr := os.ReadDir(scratch)
+		require.NoError(t, readErr)
+		require.Empty(t, entries, "scratch gosec build dir must be removed")
 		report, _ := os.ReadFile(out)
 		logged, _ := os.ReadFile(goLog)
 		return string(report) + "|" + string(logged), stderr.String(), err
@@ -1412,6 +1429,29 @@ func TestPolishSkillGosecHelperFallsBackAndReportsBuildFailures(t *testing.T) {
 		assert.Contains(t, stderr, "could not build the gosec fallback")
 		assert.Contains(t, stderr, "proxy unreachable")
 		assert.True(t, strings.HasPrefix(got, "|"), "no report may be written when the build fails: %q", got)
+	})
+	t.Run("inherited workspace does not reject the scratch module", func(t *testing.T) {
+		workspaceDir := t.TempDir()
+		workspace := filepath.Join(workspaceDir, "go.work")
+		require.NoError(t, os.WriteFile(workspace, []byte("go 1.22\n\nuse .\n"), 0o644))
+		got, stderr, err := run(t, "", false, "GOWORK="+workspace)
+		require.NoError(t, err, stderr)
+		assert.Contains(t, got, fullReport)
+		assert.NotContains(t, stderr, "not in the workspace")
+		log := strings.SplitN(got, "|", 2)[1]
+		var sawScan bool
+		for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+			if rest, ok := strings.CutPrefix(line, "SCAN_GOWORK="); ok {
+				assert.Equal(t, workspace, rest, "the CLI scan must keep the caller workspace")
+				sawScan = true
+				continue
+			}
+			assert.Truef(t, strings.HasPrefix(line, "GOWORK=off "), "scratch go saw %q", line)
+			assert.NotContains(t, line, workspace)
+		}
+		assert.True(t, sawScan, "fallback scan should record the workspace it inherited")
+		assert.Contains(t, log, "mod init polish-gosec")
+		assert.Contains(t, log, "build -o gosec")
 	})
 }
 

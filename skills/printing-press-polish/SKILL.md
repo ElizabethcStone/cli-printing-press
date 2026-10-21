@@ -484,12 +484,14 @@ polish_gosec() {
     echo "polish_gosec: installed gosec could not load every package; building the pinned fallback" >&2
   fi
   built=$(mktemp -d) || return 1
-  if ! (cd "$built" && go mod init polish-gosec && go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0 && go build -o gosec github.com/securego/gosec/v2/cmd/gosec) >"$built/build.log" 2>&1; then
+  if ! (cd "$built" && export GOWORK=off && go mod init polish-gosec && go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0 && go build -o gosec github.com/securego/gosec/v2/cmd/gosec) >"$built/build.log" 2>&1; then
     echo "polish_gosec: could not build the gosec fallback:" >&2
     tail -n 20 "$built/build.log" >&2
+    rm -rf "$built"
     return 1
   fi
   "$built/gosec" -fmt=json -out="$out" ./... 2>&1 || true
+  rm -rf "$built"
 }
 polish_gosec /tmp/polish-gosec-before.json
 ```
@@ -853,12 +855,14 @@ polish_gosec() {
     echo "polish_gosec: installed gosec could not load every package; building the pinned fallback" >&2
   fi
   built=$(mktemp -d) || return 1
-  if ! (cd "$built" && go mod init polish-gosec && go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0 && go build -o gosec github.com/securego/gosec/v2/cmd/gosec) >"$built/build.log" 2>&1; then
+  if ! (cd "$built" && export GOWORK=off && go mod init polish-gosec && go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0 && go build -o gosec github.com/securego/gosec/v2/cmd/gosec) >"$built/build.log" 2>&1; then
     echo "polish_gosec: could not build the gosec fallback:" >&2
     tail -n 20 "$built/build.log" >&2
+    rm -rf "$built"
     return 1
   fi
   "$built/gosec" -fmt=json -out="$out" ./... 2>&1 || true
+  rm -rf "$built"
 }
 polish_gosec /tmp/polish-gosec-after.json
 ```
