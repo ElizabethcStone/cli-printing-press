@@ -1440,7 +1440,7 @@ func TestPolishSkillGosecHelperFallsBackAndReportsBuildFailures(t *testing.T) {
 		assert.NotContains(t, stderr, "not in the workspace")
 		log := strings.SplitN(got, "|", 2)[1]
 		var sawScan bool
-		for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(log), "\n") {
 			if rest, ok := strings.CutPrefix(line, "SCAN_GOWORK="); ok {
 				assert.Equal(t, workspace, rest, "the CLI scan must keep the caller workspace")
 				sawScan = true
