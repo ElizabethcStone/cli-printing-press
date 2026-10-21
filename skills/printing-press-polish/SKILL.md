@@ -477,7 +477,7 @@ go vet ./... 2>&1
 # gosec against a current x/tools. The after-fix scan sources the same file.
 cat > /tmp/polish-gosec.sh <<'GOSEC'
 polish_gosec() {
-  local out="$1"
+  local out="$*"
   if command -v gosec >/dev/null 2>&1; then
     gosec -fmt=json -out="$out" ./... 2>&1 || true
     [ "$(jq '(."Golang errors" // {}) | length' "$out" 2>/dev/null || echo 1)" = 0 ] && return 0
