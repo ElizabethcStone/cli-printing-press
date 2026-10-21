@@ -191,6 +191,10 @@ func codeOrchEndpointMetadata(ep *codeOrchEndpoint) map[string]any {
 		"path":        ep.Path,
 		"summary":     ep.Summary,
 	}
+	// next_cursor comes back in params under this endpoint's page cursor name.
+	if ep.Page.CursorParam != "" {
+		out["cursor_param"] = ep.Page.CursorParam
+	}
 	return out
 }
 

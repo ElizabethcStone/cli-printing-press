@@ -55,6 +55,8 @@ func TestCodeOrchestrationPagesBoundedLists(t *testing.T) {
 	src := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
 	require.Regexp(t, `Page:\s+mcpPageConfig\{CursorParam: "cursor", NextCursorPath: "nextCursor"\}`, src,
 		"paginated GET list must carry its page config into the code-orchestration registry")
+	require.Regexp(t, `if ep\.Page\.CursorParam != "" \{\s+out\["cursor_param"\] = ep\.Page\.CursorParam`, src,
+		"endpoint metadata must name the params key that receives next_cursor")
 
 	runtimeTest := `package mcp
 
