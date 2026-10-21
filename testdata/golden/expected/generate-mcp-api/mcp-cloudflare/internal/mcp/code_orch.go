@@ -376,16 +376,19 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	// upstream cursor is sent as-is and anchors any local continuation.
 	mcpCursor, requestCursor := "", ""
 	if method == "GET" && ep.Page.CursorParam != "" {
-		if s, ok := params[ep.Page.CursorParam].(string); ok && s != "" {
-			if upstream, err := bound.UpstreamCursor(s); err == nil {
-				mcpCursor, requestCursor = s, upstream
-				if upstream == "" {
-					delete(params, ep.Page.CursorParam)
+		// Offset- and page-numbered APIs take numbers here, so stringify before decoding.
+		if v, ok := params[ep.Page.CursorParam]; ok && v != nil {
+			if s := formatMCPParamValue(v); s != "" {
+				if upstream, err := bound.UpstreamCursor(s); err == nil {
+					mcpCursor, requestCursor = s, upstream
+					if upstream == "" {
+						delete(params, ep.Page.CursorParam)
+					} else {
+						params[ep.Page.CursorParam] = upstream
+					}
 				} else {
-					params[ep.Page.CursorParam] = upstream
+					requestCursor = s
 				}
-			} else {
-				requestCursor = s
 			}
 		}
 	}

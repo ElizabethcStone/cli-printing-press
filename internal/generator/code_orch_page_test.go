@@ -30,6 +30,15 @@ func TestCodeOrchestrationPagesBoundedLists(t *testing.T) {
 				},
 				Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", NextCursorPath: "nextCursor"},
 			},
+			"list-offset": {
+				Method:      "GET",
+				Path:        "/items-by-offset",
+				Description: "List items by offset",
+				Params: []spec.Param{
+					{Name: "offset", In: "query", Type: "integer", Description: "Rows to skip"},
+				},
+				Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset"},
+			},
 			"get": {
 				Method:      "GET",
 				Path:        "/items/{id}",
@@ -119,8 +128,47 @@ func TestCodeOrchestrationPagesBoundedListsRuntime(t *testing.T) {
 		t.Fatalf("continuation of a raw-cursor page re-requested %q, want RAWPAGE2", gotCursors[3])
 	}
 }
+
+func TestCodeOrchestrationKeepsNumericStartingOffset(t *testing.T) {
+	var gotOffsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOffsets = append(gotOffsets, r.URL.Query().Get("offset"))
+		rows := make([]string, 0, 400)
+		for i := 0; i < 400; i++ {
+			rows = append(rows, fmt.Sprintf("{\"id\":\"i%03d\",\"name\":%q}", i, strings.Repeat("x", 200)))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
+	}))
+	defer server.Close()
+	t.Setenv("CORCHPAGE_BASE_URL", server.URL)
+
+	read := func(params map[string]any) map[string]any {
+		t.Helper()
+		result, err := handleCodeOrchRead(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
+			"endpoint_id": "items.list-offset", "params": params,
+		}}})
+		if err != nil || result == nil || result.IsError {
+			t.Fatalf("read failed: result=%#v err=%v", result, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(result.Content[0].(mcplib.TextContent).Text), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out
+	}
+	first := read(map[string]any{"offset": 100.0})
+	next, _ := first["next_cursor"].(string)
+	if next == "" {
+		t.Fatalf("bounded page must return a continuation cursor: %v", first)
+	}
+	read(map[string]any{"offset": next})
+	if len(gotOffsets) != 2 || gotOffsets[0] != "100" || gotOffsets[1] != "100" {
+		t.Fatalf("continuation must re-request the numeric starting offset, sent %q", gotOffsets)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "code_orch_page_runtime_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestCodeOrchestrationPagesBoundedListsRuntime$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^(TestCodeOrchestrationPagesBoundedListsRuntime|TestCodeOrchestrationKeepsNumericStartingOffset)$", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
