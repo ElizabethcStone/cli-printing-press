@@ -1300,13 +1300,119 @@ func TestPolishSkillBuildsGosecThatLoadsCurrentGo(t *testing.T) {
 	// Released gosec bundles an x/tools that cannot read newer Go export data;
 	// the fallback must build gosec against a pinned current x/tools.
 	assert.Contains(t, skill, "go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.52.0")
-	assert.Equal(t, 1, strings.Count(skill, "cat > /tmp/polish-gosec.sh <<'GOSEC'"))
-	assert.Contains(t, skill, ". /tmp/polish-gosec.sh\npolish_gosec /tmp/polish-gosec-before.json")
-	assert.Contains(t, skill, ". /tmp/polish-gosec.sh\npolish_gosec /tmp/polish-gosec-after.json")
-	// An installed gosec that skipped packages must not count as a full scan.
-	assert.Contains(t, skill, `(."Golang errors" // {}) | length`)
+	assert.Contains(t, skill, "polish_gosec /tmp/polish-gosec-before.json")
+	assert.Contains(t, skill, "polish_gosec /tmp/polish-gosec-after.json")
+	// Each skill block runs in its own shell, so both scans carry the same
+	// definition; nothing is sourced from a shared, pre-creatable path.
+	helpers := polishGosecHelpers(skill)
+	require.Len(t, helpers, 2)
+	assert.Equal(t, helpers[0], helpers[1], "baseline and after-fix gosec helpers must match")
+	assert.NotContains(t, skill, "/tmp/polish-gosec.sh")
 	assert.Contains(t, skill, `non-empty `+"`"+`"Golang errors"`+"`"+` map`)
 	assert.NotContains(t, skill, "go run github.com/securego/gosec/v2/cmd/gosec@")
+}
+
+func polishGosecHelpers(skill string) []string {
+	var out []string
+	for rest := skill; ; {
+		start := strings.Index(rest, "polish_gosec() {\n")
+		if start < 0 {
+			return out
+		}
+		end := strings.Index(rest[start:], "\n}\n")
+		if end < 0 {
+			return out
+		}
+		out = append(out, rest[start:start+end+3])
+		rest = rest[start+end+3:]
+	}
+}
+
+func TestPolishSkillGosecHelperFallsBackAndReportsBuildFailures(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not available")
+	}
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	helpers := polishGosecHelpers(skill)
+	require.NotEmpty(t, helpers)
+
+	const fullReport = `{"Issues":[],"Golang errors":{}}`
+	const partialReport = `{"Issues":[],"Golang errors":{"pkg":[{"error":"export data version 5"}]}}`
+	writeReporter := func(path, report string) {
+		script := "#!/bin/sh\nfor a in \"$@\"; do case $a in -out=*) printf '%s' '" + report + "' > \"${a#-out=}\";; esac; done\n"
+		require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	}
+	// Fake go: "go build -o <path>" installs a reporter that writes a full report;
+	// FAKE_GO_FAIL makes "go get" fail like a proxy or network outage.
+	fakeGo := func(dir string) {
+		writeReporter(filepath.Join(dir, "full-reporter"), fullReport)
+		script := "#!/bin/sh\n" +
+			"echo \"$*\" >> \"$FAKE_GO_LOG\"\n" +
+			"case $1 in\n" +
+			"get) if [ -n \"$FAKE_GO_FAIL\" ]; then echo 'proxy unreachable' >&2; exit 1; fi;;\n" +
+			"build) cp \"$FAKE_FULL_REPORTER\" \"$3\";;\n" +
+			"esac\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755))
+	}
+
+	run := func(t *testing.T, installed string, failBuild bool) (string, string, error) {
+		t.Helper()
+		bin := t.TempDir()
+		fakeGo(bin)
+		if installed != "" {
+			writeReporter(filepath.Join(bin, "gosec"), installed)
+		}
+		work := t.TempDir()
+		out := filepath.Join(work, "report.json")
+		goLog := filepath.Join(work, "go.log")
+		cmd := exec.Command("bash", "-c", helpers[0]+"polish_gosec \""+out+"\"")
+		cmd.Dir = work
+		cmd.Env = []string{
+			"PATH=" + bin + string(os.PathListSeparator) + filepath.Dir(jq) + string(os.PathListSeparator) + "/usr/bin:/bin",
+			"TMPDIR=" + t.TempDir(),
+			"FAKE_GO_LOG=" + goLog,
+			"FAKE_FULL_REPORTER=" + filepath.Join(bin, "full-reporter"),
+		}
+		if failBuild {
+			cmd.Env = append(cmd.Env, "FAKE_GO_FAIL=1")
+		}
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		report, _ := os.ReadFile(out)
+		logged, _ := os.ReadFile(goLog)
+		return string(report) + "|" + string(logged), stderr.String(), err
+	}
+
+	t.Run("complete installed scan is used as-is", func(t *testing.T) {
+		got, _, err := run(t, fullReport, false)
+		require.NoError(t, err)
+		assert.Contains(t, got, fullReport)
+		assert.NotContains(t, got, "build -o", "a complete installed scan must not build the fallback")
+	})
+	t.Run("partial installed scan rebuilds and rescans", func(t *testing.T) {
+		got, stderr, err := run(t, partialReport, false)
+		require.NoError(t, err)
+		assert.Contains(t, got, fullReport, "the fallback scan must replace the partial report")
+		assert.Contains(t, got, "build -o gosec")
+		assert.Contains(t, stderr, "could not load every package")
+	})
+	t.Run("missing gosec builds the fallback", func(t *testing.T) {
+		got, _, err := run(t, "", false)
+		require.NoError(t, err)
+		assert.Contains(t, got, fullReport)
+	})
+	t.Run("fallback build failure is reported", func(t *testing.T) {
+		got, stderr, err := run(t, "", true)
+		require.Error(t, err, "a failed fallback build must return non-zero")
+		assert.Contains(t, stderr, "could not build the gosec fallback")
+		assert.Contains(t, stderr, "proxy unreachable")
+		assert.True(t, strings.HasPrefix(got, "|"), "no report may be written when the build fails: %q", got)
+	})
 }
 
 func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
