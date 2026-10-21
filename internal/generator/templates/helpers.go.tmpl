@@ -3675,7 +3675,7 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 }
 {{- end}}
 
-{{- if .HasStampedDryRun}}
+{{- if or .HasStampedDryRun .HasBinaryResponse}}
 
 // --agent, --select, and --compact wrap or filter before the dry-run contract
 // can see top-level keys. Stamp after that formatting so the keys stay on the
@@ -3779,10 +3779,10 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
 		if printDryRun {
 			// The dry-run JSON contract needs a top-level action; the client sentinel carries only dry_run.
-			if method := cmd.Annotations["pp:method"]; method != "" {
-				if stamped, err := stampDryRunEnvelope(data, strings.ToLower(method)); err == nil {
-					data = stamped
-				}
+			// Stamp after formatting so --select still sees the sentinel and --agent cannot nest the keys.
+			// --csv/--plain keep their text formats; only JSON output carries the contract.
+			if method := cmd.Annotations["pp:method"]; method != "" && !flags.csv && !flags.plain && (flags.asJSON || !isTerminal(cmd.OutOrStdout())) {
+				return true, printStampedDryRunOutput(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"}, strings.ToLower(method))
 			}
 			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
 		}
