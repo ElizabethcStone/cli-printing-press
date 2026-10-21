@@ -28,6 +28,7 @@ func TestCodeOrchestrationSendsMultipartUploads(t *testing.T) {
 				RequestContentType: "multipart/form-data",
 				Body: []spec.Param{
 					{Name: "package", Type: "string", Format: "binary", Required: true, Description: "Package file"},
+					{Name: "attachment", BodyName: "file", Type: "string", Format: "binary", Description: "Extra file under a renamed wire field"},
 					{Name: "projectId", Type: "string", Description: "Target project"},
 				},
 			},
@@ -37,7 +38,7 @@ func TestCodeOrchestrationSendsMultipartUploads(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "corchupload-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	src := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
-	require.Regexp(t, `Multipart:\s+true,\s+FileParams:\s+\[\]string\{"package"\}`, src,
+	require.Regexp(t, `Multipart:\s+true,\s+FileParams:\s+\[\]string\{"package", "file"\}`, src,
 		"multipart endpoint must mark its binary body param as a file part")
 
 	runtimeTest := `package mcp
@@ -56,7 +57,7 @@ import (
 )
 
 func TestCodeOrchestrationSendsMultipartUploadsRuntime(t *testing.T) {
-	var gotType, gotFile, gotField string
+	var gotType, gotFile, gotRenamed, gotField string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotType = r.Header.Get("Content-Type")
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -66,6 +67,10 @@ func TestCodeOrchestrationSendsMultipartUploadsRuntime(t *testing.T) {
 		if f, _, err := r.FormFile("package"); err == nil {
 			b, _ := io.ReadAll(f)
 			gotFile = string(b)
+		}
+		if f, _, err := r.FormFile("file"); err == nil {
+			b, _ := io.ReadAll(f)
+			gotRenamed = string(b)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"ok\":true}"))
@@ -80,7 +85,7 @@ func TestCodeOrchestrationSendsMultipartUploadsRuntime(t *testing.T) {
 	result, err := handleCodeOrchExecute(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
 		"endpoint_id": "packages.import",
 		"confirm":     true,
-		"params":      map[string]any{"package": pkg, "projectId": "p1"},
+		"params":      map[string]any{"package": pkg, "file": pkg, "projectId": "p1"},
 	}}})
 	if err != nil || result == nil || result.IsError {
 		t.Fatalf("upload failed: result=%#v err=%v", result, err)
@@ -88,8 +93,8 @@ func TestCodeOrchestrationSendsMultipartUploadsRuntime(t *testing.T) {
 	if !strings.HasPrefix(gotType, "multipart/form-data") {
 		t.Fatalf("content type = %q, want multipart/form-data", gotType)
 	}
-	if gotFile != "PACKAGE-BYTES" || gotField != "p1" {
-		t.Fatalf("server saw file=%q projectId=%q", gotFile, gotField)
+	if gotFile != "PACKAGE-BYTES" || gotRenamed != "PACKAGE-BYTES" || gotField != "p1" {
+		t.Fatalf("server saw package=%q file=%q projectId=%q", gotFile, gotRenamed, gotField)
 	}
 }
 `

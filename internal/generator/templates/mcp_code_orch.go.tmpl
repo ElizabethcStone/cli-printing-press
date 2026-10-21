@@ -196,7 +196,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 {{- if endpointUsesMultipart $endpoint}}
 		Multipart: true,
-		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .Name}},{{end}}{{end}} },
+		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .BodyWireName}},{{end}}{{end}} },
 {{- end}}
 		NeedsConfirm: {{if codeOrchNeedsConfirm $endpoint $eName}}true{{else}}false{{end}},
 		Mutating: {{if and (eq (upper $endpoint.Method) "GET") (not $isReadOnly)}}true{{else}}false{{end}},
@@ -238,7 +238,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 {{- if endpointUsesMultipart $endpoint}}
 		Multipart: true,
-		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .Name}},{{end}}{{end}} },
+		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .BodyWireName}},{{end}}{{end}} },
 {{- end}}
 		NeedsConfirm: {{if codeOrchNeedsConfirm $endpoint $eName}}true{{else}}false{{end}},
 		Mutating: {{if and (eq (upper $endpoint.Method) "GET") (not $isReadOnly)}}true{{else}}false{{end}},
