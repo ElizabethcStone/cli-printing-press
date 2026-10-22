@@ -454,6 +454,7 @@ import (
 )
 
 func TestDeviceCodeLoginSendsSelectedScopes(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
 	var gotScope string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
