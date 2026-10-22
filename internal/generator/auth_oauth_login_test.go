@@ -405,10 +405,8 @@ func TestOAuthLoginScopeOverride(t *testing.T) {
 	scopeFor := func(env string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command(binPath, append([]string{"--config", configPath, "--no-input", "--dry-run", "login", "--client-id", "x"}, args...)...)
-		cmd.Env = harnessFreeEnv()
-		if env != "" {
-			cmd.Env = append(cmd.Env, "OAUTH_SCOPES_SCOPES="+env)
-		}
+		// Always set, so a developer's exported value can't leak into the default case.
+		cmd.Env = append(harnessFreeEnv(), "OAUTH_SCOPES_SCOPES="+env)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
 		_, rawURL, ok := strings.Cut(strings.TrimSpace(string(out)), "would launch: ")
@@ -423,4 +421,80 @@ func TestOAuthLoginScopeOverride(t *testing.T) {
 	require.Equal(t, "c:read d:read offline_access", scopeFor("c:read, d:read"))
 	require.Equal(t, "e:read offline_access", scopeFor("c:read", "--scopes", "e:read"))
 	require.Equal(t, "offline_access e:read", scopeFor("", "--scopes", "offline_access,e:read"))
+}
+
+func TestDeviceCodeLoginScopeOverride(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("device-scopes")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:                   "oauth2",
+		Header:                 "Authorization",
+		Format:                 "Bearer {token}",
+		OAuth2Grant:            spec.OAuth2GrantDeviceCode,
+		DeviceAuthorizationURL: "https://login.example.com/device",
+		TokenURL:               "https://login.example.com/token",
+		Scopes:                 []string{"a.read", "b.read"},
+		DefaultClientID:        "public-client-id",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "device-scopes-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package cli
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestDeviceCodeLoginSendsSelectedScopes(t *testing.T) {
+	var gotScope string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		gotScope = r.Form.Get("scope")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `{"device_code":"dc","user_code":"UC","verification_uri":"https://example.com/activate"}` + "`" + `)
+	}))
+	defer server.Close()
+
+	scopeFor := func(env string, args ...string) string {
+		t.Helper()
+		configPath := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(configPath, []byte("device_authorization_url = \""+server.URL+"\"\n"), 0o600); err != nil {
+			t.Fatalf("writing config: %v", err)
+		}
+		t.Setenv("DEVICE_SCOPES_OAUTH_SCOPE", env)
+		gotScope = ""
+		root := RootCmd()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&out)
+		root.SetArgs(append([]string{"--config", configPath, "auth", "login", "--poll=false"}, args...))
+		if err := root.Execute(); err != nil {
+			t.Fatalf("auth login error = %v; output:\n%s", err, out.String())
+		}
+		return gotScope
+	}
+
+	if got := scopeFor(""); got != "a.read b.read" {
+		t.Fatalf("default scope = %q", got)
+	}
+	if got := scopeFor("c.read d.read"); got != "c.read d.read" {
+		t.Fatalf("env scope = %q", got)
+	}
+	if got := scopeFor("c.read", "--scopes", "e.read,f.read"); got != "e.read f.read" {
+		t.Fatalf("flag scope = %q", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "device_scopes_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestDeviceCodeLoginSendsSelectedScopes")
 }
