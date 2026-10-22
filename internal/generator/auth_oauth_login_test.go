@@ -2,6 +2,7 @@ package generator
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,7 +45,7 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Contains(t, auth, "func runOAuthLogin(")
 	require.Contains(t, auth, "clientIDFromFlag := clientID != \"\"")
 	require.Contains(t, auth, "clientSecretFromFlag := clientSecret != \"\"")
-	require.Contains(t, auth, "return runOAuthLogin(cmd, flags, clientID, clientSecret, port, clientIDFromFlag, clientSecretFromFlag)")
+	require.Contains(t, auth, "return runOAuthLogin(cmd, flags, clientID, clientSecret, port, scopeOverride, clientIDFromFlag, clientSecretFromFlag)")
 	require.Contains(t, auth, "cfg.MarkCredentialsExplicit(clientIDFromFlag, clientSecretFromFlag)")
 	require.Contains(t, auth, "clientID = cfg.ClientID")
 	require.Contains(t, auth, "clientSecret = cfg.ClientSecret")
@@ -378,4 +379,48 @@ func TestOAuthLoginTopLevelCommandForBearerTokenAuthCodeSpec(t *testing.T) {
 	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	require.Contains(t, string(doctorSrc), `report["auth_hint"] = "bearer-auth-code-login-pp-cli login"`)
+}
+
+func TestOAuthLoginScopeOverride(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-scopes")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:                  "oauth2",
+		Header:                "Authorization",
+		Format:                "Bearer {token}",
+		OAuth2Grant:           spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL:      "https://accounts.example.com/oauth/authorize",
+		TokenURL:              "https://accounts.example.com/oauth/token",
+		Scopes:                []string{"a:read", "b:write"},
+		RefreshTokenMechanism: "scope:offline_access",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-scopes-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	binPath := filepath.Join(outputDir, "oauth-scopes-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/oauth-scopes-pp-cli")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+
+	scopeFor := func(env string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(binPath, append([]string{"--config", configPath, "--no-input", "--dry-run", "login", "--client-id", "x"}, args...)...)
+		cmd.Env = harnessFreeEnv()
+		if env != "" {
+			cmd.Env = append(cmd.Env, "OAUTH_SCOPES_SCOPES="+env)
+		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		_, rawURL, ok := strings.Cut(strings.TrimSpace(string(out)), "would launch: ")
+		require.True(t, ok, string(out))
+		u, err := url.Parse(rawURL)
+		require.NoError(t, err)
+		return u.Query().Get("scope")
+	}
+
+	require.Equal(t, "a:read b:write offline_access", scopeFor(""))
+	require.Equal(t, "c:read offline_access", scopeFor("", "--scopes", "c:read"))
+	require.Equal(t, "c:read d:read offline_access", scopeFor("c:read, d:read"))
+	require.Equal(t, "e:read offline_access", scopeFor("c:read", "--scopes", "e:read"))
+	require.Equal(t, "offline_access e:read", scopeFor("", "--scopes", "offline_access,e:read"))
 }
